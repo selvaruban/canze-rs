@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
-use tokio_postgres::NoTls;
 
 /// secs between polling
 pub const POLL_INTERVAL_SECS: f32 = 10.0;
@@ -82,64 +81,35 @@ impl Parameter {
     }
 }
 
-#[derive(Clone)]
-pub struct Database {
-    pub name: String,
-    pub host: String,
-    pub dbname: String,
-    pub username: String,
-    pub password: String,
-}
-
 fn create_params_table() -> Vec<Parameter> {
+    // ⚠️ This function has been updated with the MG4's CAN IDs and conversion logic.
     vec![
         Parameter::new(
             "soc",
-            "SOC",
+            "State of Charge",
             Some("%"),
-            0x222002,
-            0x7ec,
-            0x7e4,
+            0x22b046, // The CAN ID for the MG4's SOC.
+            0x000, // Placeholder.
+            0x000, // Placeholder.
             Box::new(|val| {
-                let x: f32 = (val - 0x20000) as f32 * 0.02;
-                if x == 0.0 {
-                    return Err(Error::new(ErrorKind::AddrNotAvailable, "CAN network down"));
-                }
-                Ok(x)
+                // Conversion logic: INT16(A:B)/10.0
+                let soc_value = (val as i16) as f32 / 10.0;
+                Ok(soc_value)
             }),
         ),
-        /*Parameter::new(
+        Parameter::new(
             "odometer",
             "Total vehicle distance",
             Some("km"),
-            0x222006,
-            0x7ec,
-            0x7e4,
-            Box::new(|val| Ok(val as f32)),
-        ),
-        Parameter::new(
-            "soh",
-            "SOH",
-            Some("%"),
-            0x223206,
-            0x7ec,
-            0x7e4,
-            Box::new(|val| Ok((val & 0xffff) as f32 * 0.05)),
-        ),
-        Parameter::new(
-            "active_power",
-            "Mains active power consumed",
-            Some("W"),
-            0x22504A,
-            0x793,
-            0x792,
+            0x22b101, // The CAN ID for the MG4's odometer.
+            0x000, // Placeholder.
+            0x000, // Placeholder.
             Box::new(|val| {
-                Ok(((val & 0xffff)
-                    .checked_sub(20000)
-                    .ok_or(Error::new(ErrorKind::AddrNotAvailable, "substract error"))?)
-                    as f32)
+                // Conversion logic: INT24.
+                Ok(val as f32)
             }),
-        ),*/
+        ),
+        // Add more parameters here for other metrics as you find them.
     ]
 }
 
@@ -224,7 +194,7 @@ pub async fn send_cmd(stream: &mut Stream, cmd: String) -> io::Result<Option<Vec
 
 async fn rest_save_param(
     client: &mut reqwest::Client,
-    name: &str,
+    _name: &str,
     val: f32,
 ) -> Result<()> {
     // fill JSON struct
@@ -240,23 +210,6 @@ async fn rest_save_param(
 
     info!("Response: {}", response.text().await?);
 
-    Ok(())
-}
-
-async fn influx_save_param(
-    client: &mut tokio_postgres::Client,
-    name: &str,
-    val: f32,
-) -> Result<()> {
-    if let Err(e) = client
-        .execute(
-            &format!("INSERT INTO {name} (value) VALUES ($1)"),
-            &[&(val as f64)],
-        )
-        .await
-    {
-        error!("postgres: error inserting: {:?}", e);
-    }
     Ok(())
 }
 
@@ -283,6 +236,8 @@ pub async fn get_param(
         .into();
     debug!("got response for {}: {}", p.name, raw_string);
 
+    debug!("Raw hex data for {}: {}", p.name, raw_string);
+
     //get an u32 value from a response hex string
     if raw_string.len() < 6 {
         return Err(Error::new(ErrorKind::Other, "response empty or too short!"));
@@ -301,29 +256,9 @@ pub async fn get_param(
         converted,
         p.unit.unwrap_or_default()
     );
-    //let _ = influx_save_param(client, &p.name, converted).await;
     let _ = rest_save_param(client, &p.name, converted).await;
 
     Ok(())
-}
-
-fn config_read_postgres(conf: Ini) -> std::result::Result<Database, Box<dyn std::error::Error>> {
-    match conf.section(Some("postgres".to_owned())) {
-        Some(section) => Ok(Database {
-            name: "🦏 postgres".to_string(),
-            host: section.get("host").ok_or("missing `host`")?.to_string(),
-            dbname: section.get("dbname").ok_or("missing `dbname`")?.to_string(),
-            username: section
-                .get("username")
-                .ok_or("missing `username`")?
-                .to_string(),
-            password: section
-                .get("password")
-                .ok_or("missing `password`")?
-                .to_string(),
-        }),
-        None => Err("missing [postgres] config section")?,
-    }
 }
 
 #[tokio::main]
@@ -341,16 +276,7 @@ async fn main() -> Result<()> {
     };
     let mac = get_config_string(conf.clone(), "mac", None)?;
 
-    let db = match config_read_postgres(conf.clone()) {
-        Ok(db) => db,
-        Err(e) => {
-            return Err(format!("Config error [postgres]: {}", e).into());
-        }
-    };
-    let connectionstring = format!(
-        "postgres://{}:{}@{}/{}",
-        db.username, db.password, db.host, db.dbname
-    );
+    // Removed postgres configuration and client initialization.
 
     //parse target mac address for bluetooth
     let target_addr: Address = mac.parse().expect("invalid address");
@@ -366,15 +292,6 @@ async fn main() -> Result<()> {
 
     let params = create_params_table();
     let mut poll_interval = Instant::now();
-
-    /*let (mut client, connection) = tokio_postgres::connect(&connectionstring, NoTls).await?;
-    // The connection object performs the actual communication with the database,
-    // so spawn it off to run on its own.
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            error!("connection error: {}", e);
-        }
-    });*/
     let mut client = Client::new();
 
     'connect: loop {
@@ -406,8 +323,8 @@ async fn main() -> Result<()> {
             }
         }
 
+        info!("Successfully connected to OBD dongle!");
         info!("Local address: {:?}", stream.as_ref().local_addr()?);
-        //info!("Remote address: {:?}", stream.peer_addr()?);
         info!("Security: {:?}", stream.as_ref().security()?);
 
         info!("connected, poll interval: {}s", POLL_INTERVAL_SECS);
