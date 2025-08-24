@@ -35,7 +35,7 @@ struct BatteryData {
     battery_level_percentage: f32,
 }
 
-/// Simple daemon to read Renault Zoe basic parameters using
+/// Simple daemon to read Renault Zoe (adapted for MG4) basic parameters using
 /// bluetooth dongle and save it in the InfluxDB database
 #[derive(Parser, Debug)]
 #[clap(version, about, long_about = None)]
@@ -89,24 +89,12 @@ fn create_params_table() -> Vec<Parameter> {
             "State of Charge",
             Some("%"),
             0x22b046, // The CAN ID for the MG4's SOC.
-            0x000, // Placeholder.
-            0x000, // Placeholder.
+            0x000,    // Placeholder.
+            0x000,    // Placeholder.
             Box::new(|val| {
-                // Conversion logic: INT16(A:B)/10.0
+                // Conversion logic: INT16(A:B)/10.0, then apply +4.4% correction.
                 let soc_value = (val as i16) as f32 / 10.0;
-                Ok(soc_value)
-            }),
-        ),
-        Parameter::new(
-            "odometer",
-            "Total vehicle distance",
-            Some("km"),
-            0x22b101, // The CAN ID for the MG4's odometer.
-            0x000, // Placeholder.
-            0x000, // Placeholder.
-            Box::new(|val| {
-                // Conversion logic: INT24.
-                Ok(val as f32)
+                Ok(soc_value + 4.4)
             }),
         ),
         // Add more parameters here for other metrics as you find them.
