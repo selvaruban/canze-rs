@@ -23,6 +23,11 @@ OPTIONS:
     -V, --version            Print version information
 ```
 
+## MG4 OBD
+
+Command - 0x015B
+Equation - A*100/255
+
 ## Config
 The project uses a simple configuration file:<br>
 `/etc/canze-rs.conf`<br>
