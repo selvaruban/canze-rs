@@ -32,3 +32,5 @@ A sample file may have the following contents:<br>
 [general]
 mac = 00:00:00:00:00:00  #enter your bluetooth dongle MAC here
 
+## Script for aa-proxy-rs
+
