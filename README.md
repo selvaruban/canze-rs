@@ -37,4 +37,3 @@ mac = 00:00:00:00:00:00  #enter your bluetooth dongle MAC here
 
 https://github.com/selvaruban/canze-rs/blob/aa-proxy-obd/src/canze-service
 
-```
