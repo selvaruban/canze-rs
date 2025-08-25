@@ -25,7 +25,7 @@ OPTIONS:
 
 ## MG4 OBD
 
-Command - 0x015B
+Command - 0x015B<br>
 Equation - A*100/255
 
 ## Config
