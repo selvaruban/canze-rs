@@ -26,7 +26,7 @@ OPTIONS:
 
 ## MG4 OBD
 ```
-SoC Command - 0x015B
+SoC Command - 015B
 Conversion Logic - A*100/255
 
 External Temperature Command - 0146
