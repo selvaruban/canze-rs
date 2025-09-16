@@ -1,11 +1,12 @@
 # 🚗 canze-rs-mg4
 
 ## Description
-This small linux tool is intended to connect to MG4's CAN bus and share the SoC data to aa-proxy-rs (https://github.com/aa-proxy/aa-proxy-rs)<br>
+This small Linux tool is intended to connect to MG4's CAN bus and share the SoC and External Temperature data to aa-proxy-rs (https://github.com/aa-proxy/aa-proxy-rs)<br>
 This is a fork of canze-rs (https://github.com/manio/canze-rs/tree/aa-proxy-obd)
 
 #### This tool gets the following via OBD:
 - SOC (state of charge)
+- External Temperature
 
 It is intended to running constantly (as a daemon) sensing when the car's OBD dongle is in range.
 
@@ -28,7 +29,8 @@ OPTIONS:
 SoC Command - 0x015B
 Conversion Logic - A*100/255
 
-Temp Commad - 0146
+External Temperature Command - 0146
+Conversion Logic - A-40
 ```
 
 ## Config
@@ -38,7 +40,7 @@ The project uses a simple configuration file:<br>
 A sample file may have the following contents:<br>
 ```
 [general]
-mac = 00:00:00:00:00:00  #enter your bluetooth dongle MAC here
+mac = 00:00:00:00:00:00  #enter your Bluetooth dongle MAC here
 
 ```
 ## Script for aa-proxy-rs
