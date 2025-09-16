@@ -6,6 +6,7 @@ use bluer::{
 use clap::Parser;
 use ini::Ini;
 use simplelog::*;
+use std::collections::HashMap;
 use std::io::{self, Error, ErrorKind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,9 +31,14 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 use reqwest::Client;
 use serde::Serialize;
 
+// Updated struct to match the new API format
 #[derive(Debug, Serialize)]
-struct BatteryData {
-    battery_level_percentage: f32,
+struct CarData {
+    // The API expects this name.
+    #[serde(rename = "battery_level_percentage")]
+    soc: Option<f32>,
+    #[serde(rename = "external_temp_celsius")]
+    external_temp: Option<f32>,
 }
 
 /// Simple daemon to read vehicle basic parameters using
@@ -76,13 +82,12 @@ impl Parameter {
 }
 
 fn create_params_table() -> Vec<Parameter> {
-    // ⚠️ This function has been updated with the standard OBD-II command for SOC.
     vec![
         Parameter::new(
             "soc",
             "State of Charge",
             Some("%"),
-            0x015B, // The standard OBD-II PID for SOC.
+            0x5B, // Corrected PID: 5B
             Box::new(|val| {
                 // Conversion logic: A*100/255.
                 // 'val' is the integer from the response data byte.
@@ -90,7 +95,18 @@ fn create_params_table() -> Vec<Parameter> {
                 Ok(soc_value)
             }),
         ),
-        // Add more parameters here for other metrics as you find them.
+        // Updated parameter for Ambient Air Temperature using standard PID 0146
+        Parameter::new(
+            "ambient_temp",
+            "Ambient Air Temperature",
+            Some("C"),
+            0x46, // Corrected PID: 46
+            Box::new(|val| {
+                // The formula for PID 0146 is A - 40.
+                let temp_c = val as f32 - 40.0;
+                Ok(temp_c)
+            }),
+        ),
     ]
 }
 
@@ -129,8 +145,7 @@ fn get_config_string(conf: Ini, option_name: &str, section: Option<&str>) -> io:
 pub async fn send_cmd(stream: &mut Stream, cmd: String) -> io::Result<Option<Vec<u8>>> {
     let mut buffer = vec![0u8; 512];
     let mut output_cmd: Vec<u8> = vec![];
-    let out: Option<Vec<u8>>;
-
+    
     output_cmd.extend(cmd.as_bytes());
     output_cmd.push(b'\r');
     debug!("write: {}", String::from_utf8_lossy(&output_cmd));
@@ -141,15 +156,14 @@ pub async fn send_cmd(stream: &mut Stream, cmd: String) -> io::Result<Option<Vec
 
     let mut packet = BufReader::new(stream);
     let retval = packet.read_until(EOM2, &mut buffer);
-    match timeout(Duration::from_secs_f32(5.0), retval).await {
+    
+    let out = match timeout(Duration::from_secs_f32(5.0), retval).await {
         Ok(res) => match res {
             Ok(len) => {
                 if len == 0 {
                     error!("file read error: 0 bytes");
                     return Err(Error::new(ErrorKind::Other, "0 bytes read"));
                 }
-                out = Some(buffer.clone());
-                trace!("Response: {:?}", buffer);
                 let ascii = String::from_utf8_lossy(&buffer);
                 debug!("Response ASCII (len={}): {}", len, ascii);
                 if ascii.contains("NO DATA") {
@@ -158,6 +172,7 @@ pub async fn send_cmd(stream: &mut Stream, cmd: String) -> io::Result<Option<Vec
                 if ascii.contains("7F 22 12") {
                     return Err(Error::new(ErrorKind::Other, "Service Not Supported"));
                 }
+                Some(buffer.clone())
             }
             Err(e) => {
                 error!("file read error: {}", e);
@@ -168,19 +183,18 @@ pub async fn send_cmd(stream: &mut Stream, cmd: String) -> io::Result<Option<Vec
             error!("response timeout: {}", e);
             return Err(e.into());
         }
-    }
-
+    };
     Ok(out)
 }
 
-async fn rest_save_param(
+async fn rest_save_all_params(
     client: &mut reqwest::Client,
-    _name: &str,
-    val: f32,
+    all_data: HashMap<String, f32>,
 ) -> Result<()> {
-    // fill JSON struct
-    let data = BatteryData {
-        battery_level_percentage: val,
+    // Fill the JSON struct with the collected data
+    let data = CarData {
+        soc: all_data.get("soc").cloned(),
+        external_temp: all_data.get("ambient_temp").cloned(),
     };
 
     let response = client
@@ -190,16 +204,12 @@ async fn rest_save_param(
         .await?;
 
     info!("Response: {}", response.text().await?);
-
     Ok(())
 }
 
-pub async fn get_param(
-    stream: &mut Stream,
-    p: &Parameter,
-    client: &mut reqwest::Client,
-) -> io::Result<()> {
-    let cmd = format!("{:04x}\r", p.cmd); // Standard OBD-II PID format
+pub async fn get_param_value(stream: &mut Stream, p: &Parameter) -> io::Result<f32> {
+    // The correct command format for a Mode 01 PID is "01XX"
+    let cmd = format!("01{:02X}\r", p.cmd); 
     let out = send_cmd(stream, cmd).await?.unwrap();
     
     let mut raw_string = String::from_utf8_lossy(&out);
@@ -210,8 +220,8 @@ pub async fn get_param(
         .into();
     debug!("got response for {}: {}", p.name, raw_string);
 
-    // The response for a Mode 01 PID is typically '41 5B XX', where XX is the data.
-    // We need to extract the data byte. The `raw_string` would be "415BXX".
+    // The response for a Mode 01 PID is typically '41 XX YY', where XX is the requested PID.
+    // We expect a response with 6 hex characters: '41' + 'PID' + 'DATA'.
     if raw_string.len() < 6 {
         return Err(Error::new(ErrorKind::Other, "response empty or too short!"));
     }
@@ -226,7 +236,7 @@ pub async fn get_param(
     if let Err(_) = val {
         return Err(Error::new(ErrorKind::Other, "conversion error!"));
     }
-
+    
     // Use the associated parameter converter for a value
     let converted = (p.convert)(val.unwrap())?;
 
@@ -237,9 +247,8 @@ pub async fn get_param(
         converted,
         p.unit.unwrap_or_default()
     );
-    let _ = rest_save_param(client, &p.name, converted).await;
 
-    Ok(())
+    Ok(converted)
 }
 
 #[tokio::main]
@@ -257,11 +266,9 @@ async fn main() -> Result<()> {
     };
     let mac = get_config_string(conf.clone(), "mac", None)?;
 
-    //parse target mac address for bluetooth
     let target_addr: Address = mac.parse().expect("invalid address");
     let target_sa = SocketAddr::new(target_addr, 1u8);
 
-    //Ctrl-C / SIGTERM support
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
@@ -289,8 +296,6 @@ async fn main() -> Result<()> {
             continue;
         };
 
-        // the following code is a workaround for a problem described here:
-        // https://github.com/bluez/bluer/discussions/130#discussioncomment-8845113
         debug!("Local address before: {:?}", stream.as_ref().local_addr()?);
         let mut i = 0;
         while stream.as_ref().local_addr()?.addr == bluer::Address::any() {
@@ -322,26 +327,40 @@ async fn main() -> Result<()> {
 
             if poll_interval.elapsed() > Duration::from_secs(0) {
                 poll_interval = Instant::now() + Duration::from_secs_f32(POLL_INTERVAL_SECS);
+                let mut all_data = HashMap::new();
 
                 for p in &params {
                     debug!("Trying to obtain: {} ({})", p.desc, p.name);
-                    if let Err(e) = get_param(&mut stream, p, &mut client).await {
-                        info!("GET PARAM error for: {}: {:?}", p.name, e);
-                        if e.kind() == std::io::ErrorKind::AddrNotAvailable {
-                            info!("CAN network down / car is sleeping... waiting 100s");
-                            poll_interval =
-                                Instant::now() + Duration::from_secs_f32(CAR_SLEEP_INTERVAL_SECS);
-                            continue 'inner;
+                    match get_param_value(&mut stream, p).await {
+                        Ok(val) => {
+                            all_data.insert(p.name.clone(), val);
                         }
-                        if e.kind() == std::io::ErrorKind::BrokenPipe
-                            || e.kind() == std::io::ErrorKind::TimedOut
-                            || e.kind() == std::io::ErrorKind::NotConnected
-                        {
-                            info!("Broken pipe/TimedOut/NotConnected detected ... trying to reconnect");
-                            continue 'connect;
+                        Err(e) => {
+                            info!("GET PARAM error for: {}: {:?}", p.name, e);
+                            if e.kind() == std::io::ErrorKind::AddrNotAvailable {
+                                info!("CAN network down / car is sleeping... waiting 100s");
+                                poll_interval =
+                                    Instant::now() + Duration::from_secs_f32(CAR_SLEEP_INTERVAL_SECS);
+                                continue 'inner;
+                            }
+                            if e.kind() == std::io::ErrorKind::BrokenPipe
+                                || e.kind() == std::io::ErrorKind::TimedOut
+                                || e.kind() == std::io::ErrorKind::NotConnected
+                            {
+                                info!("Broken pipe/TimedOut/NotConnected detected ... trying to reconnect");
+                                continue 'connect;
+                            }
+                            // If there is any other error, we log it but continue to get other params
                         }
                     }
                 }
+
+                // Send all collected data in a single API call
+                if !all_data.is_empty() {
+                    info!("Sending collected data to API...");
+                    let _ = rest_save_all_params(&mut client, all_data).await;
+                }
+
                 debug!("Got all params, sleeping 10 secs for next cycle");
             }
 
