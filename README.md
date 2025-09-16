@@ -27,6 +27,8 @@ OPTIONS:
 ```
 SoC Command - 0x015B
 Conversion Logic - A*100/255
+
+Temp Commad - 0146
 ```
 
 ## Config
