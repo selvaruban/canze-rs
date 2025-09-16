@@ -5,7 +5,7 @@ This small Linux tool is intended to connect to MG4's CAN bus and share the SoC 
 
 This is a fork of canze-rs (https://github.com/manio/canze-rs/tree/aa-proxy-obd)
 
-
+![alt text](https://github.com/selvaruban/canze-rs-mg4/blob/aa-proxy-obd/mg4.png)
 
 #### This tool gets the following via OBD:
 - SOC (state of charge)
